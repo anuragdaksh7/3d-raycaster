@@ -4,19 +4,21 @@ import math
 
 pygame.init()
 
-INFLUENCE_RADIUS = 20
-CHUNK_SIZE = 40
+WIDTH = 700
+HEIGHT = 700
+INFLUENCE_RADIUS = 10
+CHUNK_SIZE = 20
 
-def drawChunkBorder(width = 700,chunkSize = CHUNK_SIZE):
-    for i in range(700//chunkSize):
-        for j in range(700//chunkSize):
+def drawChunkBorder(width = WIDTH,chunkSize = CHUNK_SIZE):
+    for i in range(WIDTH//chunkSize):
+        for j in range(WIDTH//chunkSize):
             pygame.draw.rect(win, (0,255,0), pygame.Rect(i*chunkSize,j*chunkSize,chunkSize,chunkSize),1)
 
 def chunkFromCoord(cx,cy):
-    return int(cx//CHUNK_SIZE+(cy//CHUNK_SIZE)*(700//CHUNK_SIZE))
+    return int(cx//CHUNK_SIZE+(cy//CHUNK_SIZE)*(WIDTH//CHUNK_SIZE))
 
 def chunkToCoord(chunk, chunkSize = CHUNK_SIZE):
-    c = 700//chunkSize
+    c = WIDTH//chunkSize
     x = chunk%c
     y = chunk//c
     return (x*chunkSize,y*chunkSize)
@@ -35,8 +37,8 @@ def smootingFunction(center, point):
     return r
 
 def chunkDistance(c1,c2):
-    a = abs(c1%(700//CHUNK_SIZE)-c2%(700//CHUNK_SIZE))
-    b = abs(c1//(700//CHUNK_SIZE)-c2//(700//CHUNK_SIZE))
+    a = abs(c1%(WIDTH//CHUNK_SIZE)-c2%(WIDTH//CHUNK_SIZE))
+    b = abs(c1//(WIDTH//CHUNK_SIZE)-c2//(WIDTH//CHUNK_SIZE))
     return a+b
 
 def anotherSmoothingFunction(influence):
@@ -47,7 +49,7 @@ def anotherSmoothingFunction(influence):
 def distance(c1,c2):
     return math.sqrt((c1[0]-c2[0])**2+(c1[1]-c2[1])**2)
 
-win = pygame.display.set_mode((700,700))
+win = pygame.display.set_mode((WIDTH,HEIGHT))
 centers = [[340,340],[80,340],[340,80]]
 run = True
 # 50x50 pixels chunks
@@ -68,16 +70,33 @@ while run:
     pygame.display.set_caption(str(fps))
     for cc in centers:
         cx, cy = cc
-        tmp = int(cx//CHUNK_SIZE+(cy//CHUNK_SIZE)*(700//CHUNK_SIZE))
+        tmp = int(cx//CHUNK_SIZE+(cy//CHUNK_SIZE)*(WIDTH//CHUNK_SIZE))
         chunkBuffer.add(tmp)
-        chunkBuffer.add(tmp-700//CHUNK_SIZE-1)
-        chunkBuffer.add(tmp-700//CHUNK_SIZE  )
-        chunkBuffer.add(tmp-700//CHUNK_SIZE+1)
+        chunkBuffer.add(tmp-WIDTH//CHUNK_SIZE-2)
+        chunkBuffer.add(tmp-WIDTH//CHUNK_SIZE-1)
+        chunkBuffer.add(tmp-WIDTH//CHUNK_SIZE  )
+        chunkBuffer.add(tmp-WIDTH//CHUNK_SIZE+1)
+        chunkBuffer.add(tmp-WIDTH//CHUNK_SIZE+2)
+        chunkBuffer.add(tmp - 2      )
         chunkBuffer.add(tmp - 1      )
         chunkBuffer.add(tmp + 1      )
-        chunkBuffer.add(tmp+700//CHUNK_SIZE-1)
-        chunkBuffer.add(tmp+700//CHUNK_SIZE  )
-        chunkBuffer.add(tmp+700//CHUNK_SIZE+1)
+        chunkBuffer.add(tmp + 2      )
+        chunkBuffer.add(tmp+WIDTH//CHUNK_SIZE-2)
+        chunkBuffer.add(tmp+WIDTH//CHUNK_SIZE-1)
+        chunkBuffer.add(tmp+WIDTH//CHUNK_SIZE  )
+        chunkBuffer.add(tmp+WIDTH//CHUNK_SIZE+1)
+        chunkBuffer.add(tmp+WIDTH//CHUNK_SIZE+2)
+        chunkBuffer.add(tmp-(WIDTH*2)//CHUNK_SIZE - 2)
+        chunkBuffer.add(tmp-(WIDTH*2)//CHUNK_SIZE - 1)
+        chunkBuffer.add(tmp-(WIDTH*2)//CHUNK_SIZE    )
+        chunkBuffer.add(tmp-(WIDTH*2)//CHUNK_SIZE + 2)
+        chunkBuffer.add(tmp-(WIDTH*2)//CHUNK_SIZE + 1)
+        chunkBuffer.add(tmp+(WIDTH*2)//CHUNK_SIZE - 2)
+        chunkBuffer.add(tmp+(WIDTH*2)//CHUNK_SIZE - 1)
+        chunkBuffer.add(tmp+(WIDTH*2)//CHUNK_SIZE    )
+        chunkBuffer.add(tmp+(WIDTH*2)//CHUNK_SIZE + 2)
+        chunkBuffer.add(tmp+(WIDTH*2)//CHUNK_SIZE + 1)
+        
     # print(chunkBuffer)
     l = 0
     for chunk in list(chunkBuffer):
@@ -85,22 +104,20 @@ while run:
         effectiveCenters = []
         for center in centers:
             chk = chunkFromCoord(center[0],center[1])
-            tmpp = chunk-700//CHUNK_SIZE
-            tmpp_ = chunk+700//CHUNK_SIZE
             
-            if chunkDistance(chk,chunk)<=3:
+            if chunkDistance(chk,chunk)<=4:
                 effectiveCenters.append(center)
         cx,cy = chunkToCoord(chunk)
+        # print(len(effectiveCenters))
         for i, j in itertools.product(range(cx,cx+CHUNK_SIZE), range(cy,cy+CHUNK_SIZE)):
             l+=1
             influence = sum(
                 (10/(distance(center, (i, j))+1))
                 for center in effectiveCenters
             )
-
             if influence>m:
                 m = influence
-            if influence> 10/(INFLUENCE_RADIUS+1)+0.1:
+            if influence> 10/(INFLUENCE_RADIUS+1)+0.1 and anotherSmoothingFunction(influence)>0:
                 win.set_at((i, j), (0, 0, max(0,min(255,int(anotherSmoothingFunction(influence))))))
 
     # for cc in centers:
@@ -117,10 +134,10 @@ while run:
     centers[1][0] += 1
     centers[2][1] += 1
     # pygame.draw.circle(win, (255,0,0), (40,40), 20, 0)
-    drawChunkBorder()
+    # drawChunkBorder()
     pygame.display.update()
     clock.tick(60)  # Adjust the value to set the desired frame rate
-    print(l)
+    # print(l)
 pygame.quit()
 print("\n")
 print(m)
