@@ -1,4 +1,4 @@
-# Repo related to rendering
+# 3D Ray Caster
 
 A 3D rendering project which uses raycasting to render realistic images.
 made entirely in Python with
