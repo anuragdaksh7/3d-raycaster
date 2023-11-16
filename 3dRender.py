@@ -45,6 +45,7 @@ for i in camera.rays:
     colors.append(tmp)
 # print(colors)
 win = pygame.display.set_mode((SCREEN_SIZE, SCREEN_SIZE))
+pygame.display.set_caption("Render results")
 
 while run:
     for event in pygame.event.get():
