@@ -8,3 +8,6 @@ class Light:
         self.intensity = intensity
         self.c = np.array([self.x, self.y, self.z])
         self.color = np.array(color)
+
+    def getColor(self):
+        return self.color

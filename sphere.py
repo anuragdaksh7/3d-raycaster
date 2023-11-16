@@ -31,21 +31,32 @@ class Sphere:
         return (1, ray.p + t*ray.d)
     
     def normalize(self, c1, c2):
+        c1 = np.array(c1)
+        c2 = np.array(c2)
         d = c1-c2
         d = d / np.linalg.norm(d)
         return d
 
     def getLightIntensity(self, point, light, surface_normal):
+        # print(point,light.c, light.color, light.getColor())
+        light.color = np.array([1.0,1.0,1.0])
         distance = np.linalg.norm(light.c - point)
         intensity = light.color
-        diffuse_coefficient = np.dot(surface_normal, self.normalize(light.c , point))
+        # print(light.color)
+        diffuse_coefficient = np.dot(surface_normal, self.normalize(point , light.c))
+        
+        # print(intensity)
+        # print(diffuse_coefficient)
         intensity *= max(0,diffuse_coefficient)
+        # print(intensity)
         return intensity
 
     def reflectedRay(self, ray, light):
+        # print(light.color)
         result = self.pointOfIntersection(ray)
         if result == 0:
             return
+        # print("fdf")
         _, p = result
         normal = (p - self.c)
         normal = normal / np.linalg.norm(normal)
@@ -58,7 +69,8 @@ class Sphere:
         if (np.dot(randomDirUnitVector,normal)< 0):
             randomDirUnitVector*= -1
         ray.colorMerger(self.color)
-        ray.colorMerger(self.getLightIntensity(p,light,normal))
+        ray.colorMerger(self.getLightIntensity(p,light,reflected))
+        # print(ray.color)
     
 if __name__ == '__main__':
     from Ray import Ray
