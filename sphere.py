@@ -14,7 +14,19 @@ def normalize(vector):
 
 
 class Sphere:
-    def __init__(self, x, y, z, radius, color, roughness=0.0, reflectivity=0.15, specular=64):
+    def __init__(
+        self,
+        x,
+        y,
+        z,
+        radius,
+        color,
+        roughness=0.0,
+        reflectivity=0.15,
+        specular=64,
+        metallic=0.0,
+        emissive=0.0,
+    ):
         self.x = float(x)
         self.y = float(y)
         self.z = float(z)
@@ -23,6 +35,8 @@ class Sphere:
         self.roughness = float(roughness)
         self.reflectivity = float(reflectivity)
         self.specular = float(specular)
+        self.metallic = float(metallic)
+        self.emissive = float(emissive)
         self.c = np.array([self.x, self.y, self.z], dtype=float)
 
     def pointOfIntersection(self, ray):
@@ -65,16 +79,22 @@ class Plane:
         color=(0.85, 0.85, 0.88),
         secondary_color=(0.18, 0.18, 0.2),
         checker_size=1.0,
+        roughness=0.0,
         reflectivity=0.0,
         specular=8,
+        metallic=0.0,
+        emissive=0.0,
     ):
         self.point = np.array(point, dtype=float)
         self.normal = normalize(normal)
         self.color = np.array(color, dtype=float)
         self.secondary_color = np.array(secondary_color, dtype=float)
         self.checker_size = float(checker_size)
+        self.roughness = float(roughness)
         self.reflectivity = float(reflectivity)
         self.specular = float(specular)
+        self.metallic = float(metallic)
+        self.emissive = float(emissive)
         self.c = self.point
 
     def intersect(self, ray):

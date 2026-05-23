@@ -73,13 +73,6 @@ def env_bool(values, key, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def env_str(values, key, default):
-    value = values.get(key, default)
-    if value is None:
-        return default
-    return str(value)
-
-
 def choose_backend(values):
     requested = env_str(values, "RENDER_BACKEND", "auto").strip().lower()
     if requested in {"cuda", "gpu"}:
@@ -99,7 +92,7 @@ def normalize_vectors(vectors, xp):
 
 
 class SceneRenderer:
-    def __init__(self, objects, lights, width, height, fov, ambient, xp, enable_shadows=True):
+    def __init__(self, objects, lights, width, height, fov, ambient, xp, enable_shadows=True, aa_samples=1):
         self.objects = objects
         self.lights = lights
         self.width = width
@@ -108,6 +101,7 @@ class SceneRenderer:
         self.ambient = ambient
         self.xp = xp
         self.enable_shadows = enable_shadows
+        self.aa_samples = max(1, int(aa_samples))
         self.surface = pygame.Surface((width, height)).convert()
         self.scale = math.tan(math.radians(fov) / 2.0)
         aspect_ratio = width / height
@@ -117,6 +111,19 @@ class SceneRenderer:
         self.y_coords = xp_array(xp, y_coords)
         self.sky_top = xp_array(xp, (0.53, 0.74, 0.98))
         self.sky_bottom = xp_array(xp, (0.08, 0.09, 0.12))
+        self.light_positions = [xp_array(xp, light.c) for light in lights]
+        self.light_colors = [xp_array(xp, light.color) for light in lights]
+        self.light_intensities = [float(light.intensity) for light in lights]
+        side = int(math.ceil(math.sqrt(self.aa_samples)))
+        offsets = []
+        for row in range(side):
+            for col in range(side):
+                if len(offsets) >= self.aa_samples:
+                    break
+                dx = (col + 0.5) / side - 0.5
+                dy = (row + 0.5) / side - 0.5
+                offsets.append((dx, dy))
+        self.sample_offsets = xp_array(xp, offsets)
 
     def build_directions(self, camera):
         forward, right, up = camera.get_basis()
@@ -127,6 +134,20 @@ class SceneRenderer:
             forward[None, None, :]
             + self.x_coords[None, :, None] * right[None, None, :]
             + self.y_coords[:, None, None] * up[None, None, :]
+        )
+        return normalize_vectors(directions, self.xp)
+
+    def build_sample_directions(self, camera, offset_x, offset_y):
+        forward, right, up = camera.get_basis()
+        forward = xp_array(self.xp, forward)
+        right = xp_array(self.xp, right)
+        up = xp_array(self.xp, up)
+        x_coords = self.x_coords + offset_x * (2.0 * self.scale / self.width)
+        y_coords = self.y_coords + offset_y * (2.0 * self.scale / self.height)
+        directions = (
+            forward[None, None, :]
+            + x_coords[None, :, None] * right[None, None, :]
+            + y_coords[:, None, None] * up[None, None, :]
         )
         return normalize_vectors(directions, self.xp)
 
@@ -183,8 +204,7 @@ class SceneRenderer:
         secondary = xp_array(self.xp, plane.secondary_color)
         return self.xp.where(checker[..., None], primary, secondary)
 
-    def shadow_visibility(self, points, normals, light, object_index):
-        light_position = xp_array(self.xp, light.c)
+    def shadow_visibility(self, points, normals, light_position, object_index):
         to_light = light_position - (points + normals * 1e-4)
         distances = self.xp.linalg.norm(to_light, axis=-1)
         light_dirs = to_light / self.xp.maximum(distances[..., None], 1e-8)
@@ -207,37 +227,56 @@ class SceneRenderer:
 
         color = base_color * self.ambient
         view_dirs = -directions
+        metallic = float(getattr(obj, "metallic", 0.0))
+        roughness = float(getattr(obj, "roughness", 0.0))
+        emissive = float(getattr(obj, "emissive", 0.0))
 
-        for light in self.lights:
+        for light_position, light_color, light_intensity in zip(self.light_positions, self.light_colors, self.light_intensities):
             if self.enable_shadows:
-                visible, light_dirs, distances = self.shadow_visibility(points, normals, light, object_index)
+                visible, light_dirs, distances = self.shadow_visibility(points, normals, light_position, object_index)
             else:
-                light_position = xp_array(self.xp, light.c)
                 to_light = light_position - points
                 distances = self.xp.linalg.norm(to_light, axis=-1)
                 light_dirs = to_light / self.xp.maximum(distances[..., None], 1e-8)
                 visible = self.xp.ones(distances.shape, dtype=bool)
 
-            attenuation = light.intensity / (1.0 + 0.08 * distances * distances)
+            attenuation = light_intensity / (1.0 + 0.08 * distances * distances)
             diffuse = self.xp.maximum(self.xp.sum(normals * light_dirs, axis=-1), 0.0)
-            color += base_color * xp_array(self.xp, light.color) * diffuse[..., None] * attenuation[..., None] * visible[..., None]
+            diffuse_color = base_color * (1.0 - metallic)
+            color += diffuse_color * light_color * diffuse[..., None] * attenuation[..., None] * visible[..., None]
 
             halfway = normalize_vectors(light_dirs + view_dirs, self.xp)
-            specular_strength = getattr(obj, "specular", 32.0)
+            specular_strength = max(4.0, getattr(obj, "specular", 32.0) * (1.0 - 0.65 * roughness))
             specular = self.xp.maximum(self.xp.sum(normals * halfway, axis=-1), 0.0) ** specular_strength
-            color += xp_array(self.xp, light.color) * specular[..., None] * attenuation[..., None] * visible[..., None]
+            specular_color = light_color * (1.0 - metallic) + base_color * metallic
+            color += specular_color * specular[..., None] * attenuation[..., None] * visible[..., None]
+
+        if emissive > 0.0:
+            color += base_color * emissive
 
         return self.xp.clip(color, 0.0, 1.0)
 
     def render(self, camera):
         origin = xp_array(self.xp, (camera.x, camera.y, camera.z))
-        directions = self.build_directions(camera)
+        if self.aa_samples <= 1:
+            directions = self.build_directions(camera)
+            image = self._render_directions(origin, directions)
+            self.present(image)
+            return
+
+        image = self.xp.zeros((self.height, self.width, 3), dtype=self.xp.float32)
+        for offset_x, offset_y in self.sample_offsets:
+            directions = self.build_sample_directions(camera, float(offset_x), float(offset_y))
+            image += self._render_directions(origin, directions)
+        image /= float(self.aa_samples)
+        self.present(self.xp.clip(image, 0.0, 1.0))
+
+    def _render_directions(self, origin, directions):
         image = self.background_for(directions)
         closest_t, hit_index = self.trace_scene(origin, directions)
         hit_mask = self.xp.isfinite(closest_t)
         if not self.xp.any(hit_mask):
-            self.present(image)
-            return
+            return image
 
         points = origin[None, None, :] + closest_t[..., None] * directions
         for object_index, obj in enumerate(self.objects):
@@ -247,8 +286,7 @@ class SceneRenderer:
             shaded = self.shade_object(points[object_mask], directions[object_mask], obj, object_index)
             image[object_mask] = shaded
 
-        image = self.xp.clip(image, 0.0, 1.0)
-        self.present(image)
+        return self.xp.clip(image, 0.0, 1.0)
 
     def present(self, image):
         if self.xp is np:
@@ -260,16 +298,17 @@ class SceneRenderer:
 
 def build_sample_scene():
     objects = [
-        Sphere(-1.35, -0.15, 4.25, 0.85, (0.96, 0.34, 0.26), reflectivity=0.12, specular=96),
-        Sphere(1.15, -0.35, 5.2, 0.95, (0.28, 0.55, 0.94), reflectivity=0.25, specular=128),
-        Sphere(0.15, 0.9, 3.35, 0.45, (0.94, 0.82, 0.22), reflectivity=0.05, specular=48),
+        Sphere(-1.45, -0.15, 4.15, 0.78, (0.96, 0.34, 0.26), roughness=0.85, reflectivity=0.04, specular=24, metallic=0.0),
+        Sphere(1.05, -0.35, 5.0, 0.92, (0.28, 0.55, 0.94), roughness=0.18, reflectivity=0.22, specular=128, metallic=0.35),
+        Sphere(0.2, 0.82, 3.25, 0.42, (0.94, 0.82, 0.22), roughness=0.08, reflectivity=0.08, specular=192, metallic=0.78),
         Plane(
             point=(0.0, -1.0, 0.0),
             normal=(0.0, 1.0, 0.0),
             color=(0.82, 0.82, 0.86),
             secondary_color=(0.16, 0.16, 0.18),
             checker_size=1.0,
-            reflectivity=0.06,
+            roughness=1.0,
+            reflectivity=0.04,
             specular=12,
         ),
     ]
@@ -371,6 +410,7 @@ def parse_scene_env():
         "backend_name": backend_name,
         "render_width": default_render_width if use_quality_preset else env_int(values, "RENDER_WIDTH", default_render_width),
         "render_height": default_render_height if use_quality_preset else env_int(values, "RENDER_HEIGHT", default_render_height),
+        "aa_samples": env_int(values, "AA_SAMPLES", 1),
         "fov": env_float(values, "FOV", 70.0),
         "camera_x": env_float(values, "CAMERA_X", 0.0),
         "camera_y": env_float(values, "CAMERA_Y", 0.15),
@@ -410,6 +450,7 @@ def main():
         config["ambient"],
         config["backend"],
         enable_shadows=config["enable_shadows"],
+        aa_samples=config["aa_samples"],
     )
 
     running = True
