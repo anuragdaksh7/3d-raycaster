@@ -28,3 +28,5 @@ Set `QUALITY=low|medium|high|ultra` to scale the internal render resolution. If 
 Set `AA_SAMPLES=1` for no anti-aliasing, or `2` / `4` for smoother edges at higher cost.
 
 For best speed, keep `QUALITY=medium` or lower, `ENABLE_SHADOWS=0`, and `AA_SAMPLES=1`.
+
+Set `NOISE_AMOUNT=0.01` for a little film grain; raise it only if you want a noisier look.

@@ -91,8 +91,14 @@ def normalize_vectors(vectors, xp):
     return vectors / xp.maximum(lengths, 1e-8)
 
 
+def random_noise(xp, shape):
+    if xp is np:
+        return xp.random.random(shape).astype(xp.float32)
+    return xp.random.random(shape, dtype=xp.float32)
+
+
 class SceneRenderer:
-    def __init__(self, objects, lights, width, height, fov, ambient, xp, enable_shadows=True, aa_samples=1):
+    def __init__(self, objects, lights, width, height, fov, ambient, xp, enable_shadows=True, aa_samples=1, noise_amount=0.0):
         self.objects = objects
         self.lights = lights
         self.width = width
@@ -102,6 +108,7 @@ class SceneRenderer:
         self.xp = xp
         self.enable_shadows = enable_shadows
         self.aa_samples = max(1, int(aa_samples))
+        self.noise_amount = max(0.0, float(noise_amount))
         self.surface = pygame.Surface((width, height)).convert()
         self.scale = math.tan(math.radians(fov) / 2.0)
         aspect_ratio = width / height
@@ -261,7 +268,7 @@ class SceneRenderer:
         if self.aa_samples <= 1:
             directions = self.build_directions(camera)
             image = self._render_directions(origin, directions)
-            self.present(image)
+            self.present(self.apply_noise(image))
             return
 
         image = self.xp.zeros((self.height, self.width, 3), dtype=self.xp.float32)
@@ -269,7 +276,7 @@ class SceneRenderer:
             directions = self.build_sample_directions(camera, float(offset_x), float(offset_y))
             image += self._render_directions(origin, directions)
         image /= float(self.aa_samples)
-        self.present(self.xp.clip(image, 0.0, 1.0))
+        self.present(self.apply_noise(self.xp.clip(image, 0.0, 1.0)))
 
     def _render_directions(self, origin, directions):
         image = self.background_for(directions)
@@ -287,6 +294,12 @@ class SceneRenderer:
             image[object_mask] = shaded
 
         return self.xp.clip(image, 0.0, 1.0)
+
+    def apply_noise(self, image):
+        if self.noise_amount <= 0.0:
+            return image
+        grain = random_noise(self.xp, image.shape) - 0.5
+        return self.xp.clip(image + grain * self.noise_amount, 0.0, 1.0)
 
     def present(self, image):
         if self.xp is np:
@@ -411,6 +424,7 @@ def parse_scene_env():
         "render_width": default_render_width if use_quality_preset else env_int(values, "RENDER_WIDTH", default_render_width),
         "render_height": default_render_height if use_quality_preset else env_int(values, "RENDER_HEIGHT", default_render_height),
         "aa_samples": env_int(values, "AA_SAMPLES", 1),
+        "noise_amount": env_float(values, "NOISE_AMOUNT", 0.01),
         "fov": env_float(values, "FOV", 70.0),
         "camera_x": env_float(values, "CAMERA_X", 0.0),
         "camera_y": env_float(values, "CAMERA_Y", 0.15),
@@ -451,6 +465,7 @@ def main():
         config["backend"],
         enable_shadows=config["enable_shadows"],
         aa_samples=config["aa_samples"],
+        noise_amount=config["noise_amount"],
     )
 
     running = True
