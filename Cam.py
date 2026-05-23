@@ -56,6 +56,16 @@ class Camera:
         direction = forward + x_ndc * aspect_ratio * scale * right + y_ndc * scale * up
         return Ray(self.x, self.y, self.z, direction, (1.0, 1.0, 1.0))
 
+    def get_ray_direction(self, px, py, width, height, basis=None):
+        if basis is None:
+            basis = self.get_basis()
+        forward, right, up = basis
+        aspect_ratio = width / height
+        scale = math.tan(math.radians(self.fov) / 2.0)
+        x_ndc = (2.0 * (px + 0.5) / width) - 1.0
+        y_ndc = 1.0 - (2.0 * (py + 0.5) / height)
+        return forward + x_ndc * aspect_ratio * scale * right + y_ndc * scale * up
+
     def emitRays(self, w, h, q_factor=1):
         self.rays = [[self.get_ray(j, i, w, h) for j in range(w)] for i in range(h)]
         return self.rays

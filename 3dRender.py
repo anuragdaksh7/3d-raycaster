@@ -39,6 +39,13 @@ def env_float(values, key, default):
         return default
 
 
+def env_str(values, key, default):
+    value = values.get(key, default)
+    if value is None:
+        return default
+    return str(value)
+
+
 def clamp01(color):
     return np.clip(color, 0.0, 1.0)
 
@@ -148,11 +155,22 @@ def shade(ray, objects, lights, ambient=0.12, depth=0, max_depth=1):
 def parse_scene_env():
     values = load_env()
     values.update(os.environ)
+    quality_raw = values.get("QUALITY")
+    quality = env_str(values, "QUALITY", "low").lower()
+    quality_presets = {
+        "low": (128, 72),
+        "medium": (192, 108),
+        "high": (256, 144),
+        "ultra": (320, 180),
+    }
+    use_quality_preset = quality_raw is not None and str(quality_raw).strip() != ""
+    default_render_width, default_render_height = quality_presets.get(quality, quality_presets["low"])
     config = {
         "window_width": env_int(values, "WINDOW_WIDTH", 960),
         "window_height": env_int(values, "WINDOW_HEIGHT", 540),
-        "render_width": env_int(values, "RENDER_WIDTH", 160),
-        "render_height": env_int(values, "RENDER_HEIGHT", 90),
+        "quality": quality,
+        "render_width": default_render_width if use_quality_preset else env_int(values, "RENDER_WIDTH", default_render_width),
+        "render_height": default_render_height if use_quality_preset else env_int(values, "RENDER_HEIGHT", default_render_height),
         "fov": env_float(values, "FOV", 70.0),
         "camera_x": env_float(values, "CAMERA_X", 0.0),
         "camera_y": env_float(values, "CAMERA_Y", 0.15),
@@ -170,9 +188,11 @@ def parse_scene_env():
 def render_scene(screen, camera, objects, lights, render_size, ambient):
     render_width, render_height = render_size
     pixels = np.zeros((render_height, render_width, 3), dtype=np.float32)
+    basis = camera.get_basis()
     for y in range(render_height):
         for x in range(render_width):
-            ray = camera.get_ray(x, y, render_width, render_height)
+            direction = camera.get_ray_direction(x, y, render_width, render_height, basis)
+            ray = Ray(camera.x, camera.y, camera.z, direction, (1.0, 1.0, 1.0))
             pixels[y, x] = shade(ray, objects, lights, ambient=ambient)
     surface = pygame.Surface((render_width, render_height)).convert()
     pixel_array = np.ascontiguousarray((pixels * 255).astype(np.uint8).swapaxes(0, 1))
@@ -200,6 +220,7 @@ def main():
     running = True
     frame_count = 0
     startup_grace_frames = 3
+    render_size = (config["render_width"], config["render_height"])
     while running:
         dt = clock.tick(30) / 1000.0
         keys = pygame.key.get_pressed()
@@ -228,7 +249,7 @@ def main():
         if keys[pygame.K_DOWN]:
             camera.rotate(pitch_delta=-look_speed)
 
-        render_scene(screen, camera, objects, lights, (config["render_width"], config["render_height"]), config["ambient"])
+        render_scene(screen, camera, objects, lights, render_size, config["ambient"])
         pygame.display.flip()
 
         for event in pygame.event.get():

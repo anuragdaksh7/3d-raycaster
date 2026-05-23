@@ -19,3 +19,5 @@ python 3dRender.py
 ## Environment
 
 Copy `.env.example` to `.env` to change resolution, camera position, and frame rate limits.
+
+Set `QUALITY=low|medium|high|ultra` to scale the internal render resolution. If `QUALITY` is set, it takes priority over `RENDER_WIDTH` / `RENDER_HEIGHT`.
