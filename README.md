@@ -21,3 +21,5 @@ python 3dRender.py
 Copy `.env.example` to `.env` to change resolution, camera position, and frame rate limits.
 
 Set `QUALITY=low|medium|high|ultra` to scale the internal render resolution. If `QUALITY` is set, it takes priority over `RENDER_WIDTH` / `RENDER_HEIGHT`.
+
+`RENDER_BACKEND=auto` will use CUDA when CuPy is installed, otherwise CPU. `ENABLE_SHADOWS=0` is the fastest mode; turn it on for nicer lighting.

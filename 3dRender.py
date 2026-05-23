@@ -5,6 +5,11 @@ from pathlib import Path
 import numpy as np
 import pygame
 
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
+
 from Cam import Camera
 from Light import Light
 from Ray import Ray
@@ -59,6 +64,198 @@ def background_color(direction):
     sky = np.array([0.53, 0.74, 0.98], dtype=float)
     horizon = np.array([0.08, 0.09, 0.12], dtype=float)
     return horizon * (1.0 - t) + sky * t
+
+
+def env_bool(values, key, default=False):
+    value = values.get(key)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_str(values, key, default):
+    value = values.get(key, default)
+    if value is None:
+        return default
+    return str(value)
+
+
+def choose_backend(values):
+    requested = env_str(values, "RENDER_BACKEND", "auto").strip().lower()
+    if requested in {"cuda", "gpu"}:
+        return (cp, "cuda") if cp is not None else (np, "cpu")
+    if requested == "auto" and cp is not None:
+        return cp, "cuda"
+    return np, "cpu"
+
+
+def xp_array(xp, value):
+    return xp.asarray(value, dtype=xp.float32)
+
+
+def normalize_vectors(vectors, xp):
+    lengths = xp.linalg.norm(vectors, axis=-1, keepdims=True)
+    return vectors / xp.maximum(lengths, 1e-8)
+
+
+class SceneRenderer:
+    def __init__(self, objects, lights, width, height, fov, ambient, xp, enable_shadows=True):
+        self.objects = objects
+        self.lights = lights
+        self.width = width
+        self.height = height
+        self.fov = fov
+        self.ambient = ambient
+        self.xp = xp
+        self.enable_shadows = enable_shadows
+        self.surface = pygame.Surface((width, height)).convert()
+        self.scale = math.tan(math.radians(fov) / 2.0)
+        aspect_ratio = width / height
+        x_coords = (((np.arange(width) + 0.5) / width) * 2.0 - 1.0) * aspect_ratio * self.scale
+        y_coords = (1.0 - ((np.arange(height) + 0.5) / height) * 2.0) * self.scale
+        self.x_coords = xp_array(xp, x_coords)
+        self.y_coords = xp_array(xp, y_coords)
+        self.sky_top = xp_array(xp, (0.53, 0.74, 0.98))
+        self.sky_bottom = xp_array(xp, (0.08, 0.09, 0.12))
+
+    def build_directions(self, camera):
+        forward, right, up = camera.get_basis()
+        forward = xp_array(self.xp, forward)
+        right = xp_array(self.xp, right)
+        up = xp_array(self.xp, up)
+        directions = (
+            forward[None, None, :]
+            + self.x_coords[None, :, None] * right[None, None, :]
+            + self.y_coords[:, None, None] * up[None, None, :]
+        )
+        return normalize_vectors(directions, self.xp)
+
+    def background_for(self, directions):
+        t = 0.5 * (directions[..., 1] + 1.0)
+        return self.sky_bottom * (1.0 - t)[..., None] + self.sky_top * t[..., None]
+
+    def intersect_sphere(self, origin, directions, sphere):
+        center = xp_array(self.xp, (sphere.x, sphere.y, sphere.z))
+        oc = origin - center
+        b = self.xp.sum(oc * directions, axis=-1)
+        c = self.xp.sum(oc * oc, axis=-1) - sphere.radius * sphere.radius
+        discriminant = b * b - c
+        sqrt_discriminant = self.xp.sqrt(self.xp.maximum(discriminant, 0.0))
+        t1 = -b - sqrt_discriminant
+        t2 = -b + sqrt_discriminant
+        valid = discriminant >= 0.0
+        return self.xp.where(
+            valid & (t1 > 1e-4),
+            t1,
+            self.xp.where(valid & (t2 > 1e-4), t2, self.xp.inf),
+        )
+
+    def intersect_plane(self, origin, directions, plane):
+        point = xp_array(self.xp, plane.point)
+        normal = xp_array(self.xp, plane.normal)
+        denom = self.xp.sum(directions * normal, axis=-1)
+        numerator = self.xp.sum((point - origin) * normal, axis=-1)
+        t = numerator / denom
+        valid = (self.xp.abs(denom) > 1e-4) & (t > 1e-4)
+        return self.xp.where(valid, t, self.xp.inf)
+
+    def intersect_object(self, origin, directions, obj):
+        if isinstance(obj, Sphere):
+            return self.intersect_sphere(origin, directions, obj)
+        if isinstance(obj, Plane):
+            return self.intersect_plane(origin, directions, obj)
+        raise TypeError(f"Unsupported object type: {type(obj)!r}")
+
+    def trace_scene(self, origin, directions):
+        hits = [self.intersect_object(origin, directions, obj) for obj in self.objects]
+        if not hits:
+            shape = directions.shape[:2]
+            return self.xp.full(shape, self.xp.inf), self.xp.full(shape, -1, dtype=self.xp.int32)
+        hit_stack = self.xp.stack(hits, axis=0)
+        hit_index = self.xp.argmin(hit_stack, axis=0).astype(self.xp.int32)
+        closest_t = self.xp.min(hit_stack, axis=0)
+        return closest_t, hit_index
+
+    def plane_color(self, points, plane):
+        pattern = self.xp.floor(points[..., 0] / plane.checker_size) + self.xp.floor(points[..., 2] / plane.checker_size)
+        checker = (pattern.astype(self.xp.int32) & 1) == 0
+        primary = xp_array(self.xp, plane.color)
+        secondary = xp_array(self.xp, plane.secondary_color)
+        return self.xp.where(checker[..., None], primary, secondary)
+
+    def shadow_visibility(self, points, normals, light, object_index):
+        light_position = xp_array(self.xp, light.c)
+        to_light = light_position - (points + normals * 1e-4)
+        distances = self.xp.linalg.norm(to_light, axis=-1)
+        light_dirs = to_light / self.xp.maximum(distances[..., None], 1e-8)
+        occluded = self.xp.zeros(distances.shape, dtype=bool)
+        for index, obj in enumerate(self.objects):
+            if index == object_index:
+                continue
+            shadow_hit = self.intersect_object(points + normals * 1e-4, light_dirs, obj)
+            occluded |= (shadow_hit > 1e-4) & (shadow_hit < distances)
+        return ~occluded, light_dirs, distances
+
+    def shade_object(self, points, directions, obj, object_index):
+        if isinstance(obj, Sphere):
+            center = xp_array(self.xp, (obj.x, obj.y, obj.z))
+            normals = normalize_vectors(points - center, self.xp)
+            base_color = self.xp.broadcast_to(xp_array(self.xp, obj.color), points.shape)
+        else:
+            normals = self.xp.broadcast_to(xp_array(self.xp, obj.normal), points.shape)
+            base_color = self.plane_color(points, obj)
+
+        color = base_color * self.ambient
+        view_dirs = -directions
+
+        for light in self.lights:
+            if self.enable_shadows:
+                visible, light_dirs, distances = self.shadow_visibility(points, normals, light, object_index)
+            else:
+                light_position = xp_array(self.xp, light.c)
+                to_light = light_position - points
+                distances = self.xp.linalg.norm(to_light, axis=-1)
+                light_dirs = to_light / self.xp.maximum(distances[..., None], 1e-8)
+                visible = self.xp.ones(distances.shape, dtype=bool)
+
+            attenuation = light.intensity / (1.0 + 0.08 * distances * distances)
+            diffuse = self.xp.maximum(self.xp.sum(normals * light_dirs, axis=-1), 0.0)
+            color += base_color * xp_array(self.xp, light.color) * diffuse[..., None] * attenuation[..., None] * visible[..., None]
+
+            halfway = normalize_vectors(light_dirs + view_dirs, self.xp)
+            specular_strength = getattr(obj, "specular", 32.0)
+            specular = self.xp.maximum(self.xp.sum(normals * halfway, axis=-1), 0.0) ** specular_strength
+            color += xp_array(self.xp, light.color) * specular[..., None] * attenuation[..., None] * visible[..., None]
+
+        return self.xp.clip(color, 0.0, 1.0)
+
+    def render(self, camera):
+        origin = xp_array(self.xp, (camera.x, camera.y, camera.z))
+        directions = self.build_directions(camera)
+        image = self.background_for(directions)
+        closest_t, hit_index = self.trace_scene(origin, directions)
+        hit_mask = self.xp.isfinite(closest_t)
+        if not self.xp.any(hit_mask):
+            self.present(image)
+            return
+
+        points = origin[None, None, :] + closest_t[..., None] * directions
+        for object_index, obj in enumerate(self.objects):
+            object_mask = (hit_index == object_index) & hit_mask
+            if not self.xp.any(object_mask):
+                continue
+            shaded = self.shade_object(points[object_mask], directions[object_mask], obj, object_index)
+            image[object_mask] = shaded
+
+        image = self.xp.clip(image, 0.0, 1.0)
+        self.present(image)
+
+    def present(self, image):
+        if self.xp is np:
+            pixels = (image * 255).astype(np.uint8).swapaxes(0, 1)
+        else:
+            pixels = cp.asnumpy((image * 255).astype(cp.uint8)).swapaxes(0, 1)
+        pygame.surfarray.blit_array(self.surface, np.ascontiguousarray(pixels))
 
 
 def build_sample_scene():
@@ -165,10 +362,13 @@ def parse_scene_env():
     }
     use_quality_preset = quality_raw is not None and str(quality_raw).strip() != ""
     default_render_width, default_render_height = quality_presets.get(quality, quality_presets["low"])
+    backend, backend_name = choose_backend(values)
     config = {
         "window_width": env_int(values, "WINDOW_WIDTH", 960),
         "window_height": env_int(values, "WINDOW_HEIGHT", 540),
         "quality": quality,
+        "backend": backend,
+        "backend_name": backend_name,
         "render_width": default_render_width if use_quality_preset else env_int(values, "RENDER_WIDTH", default_render_width),
         "render_height": default_render_height if use_quality_preset else env_int(values, "RENDER_HEIGHT", default_render_height),
         "fov": env_float(values, "FOV", 70.0),
@@ -180,31 +380,16 @@ def parse_scene_env():
         "move_speed": env_float(values, "MOVE_SPEED", 3.5),
         "look_speed": env_float(values, "LOOK_SPEED", 90.0),
         "ambient": env_float(values, "AMBIENT", 0.12),
+        "enable_shadows": env_bool(values, "ENABLE_SHADOWS", False),
         "max_frames": env_int(values, "MAX_FRAMES", 0),
     }
     return config
 
 
-def render_scene(screen, camera, objects, lights, render_size, ambient):
-    render_width, render_height = render_size
-    pixels = np.zeros((render_height, render_width, 3), dtype=np.float32)
-    basis = camera.get_basis()
-    for y in range(render_height):
-        for x in range(render_width):
-            direction = camera.get_ray_direction(x, y, render_width, render_height, basis)
-            ray = Ray(camera.x, camera.y, camera.z, direction, (1.0, 1.0, 1.0))
-            pixels[y, x] = shade(ray, objects, lights, ambient=ambient)
-    surface = pygame.Surface((render_width, render_height)).convert()
-    pixel_array = np.ascontiguousarray((pixels * 255).astype(np.uint8).swapaxes(0, 1))
-    pygame.surfarray.blit_array(surface, pixel_array)
-    scaled = pygame.transform.scale(surface, screen.get_size())
-    screen.blit(scaled, (0, 0))
-
-
 def main():
     config = parse_scene_env()
     pygame.init()
-    pygame.display.set_caption("3D Raycaster")
+    pygame.display.set_caption(f"3D Raycaster [{config['backend_name']}]")
     screen = pygame.display.set_mode((config["window_width"], config["window_height"]))
     clock = pygame.time.Clock()
 
@@ -216,13 +401,22 @@ def main():
         (config["camera_yaw"], config["camera_pitch"], 0.0),
         fov=config["fov"],
     )
+    renderer = SceneRenderer(
+        objects,
+        lights,
+        config["render_width"],
+        config["render_height"],
+        config["fov"],
+        config["ambient"],
+        config["backend"],
+        enable_shadows=config["enable_shadows"],
+    )
 
     running = True
     frame_count = 0
     startup_grace_frames = 3
-    render_size = (config["render_width"], config["render_height"])
     while running:
-        dt = clock.tick(30) / 1000.0
+        dt = clock.tick(60) / 1000.0
         keys = pygame.key.get_pressed()
         forward, right, up = camera.get_basis()
         move_speed = config["move_speed"] * dt
@@ -249,7 +443,8 @@ def main():
         if keys[pygame.K_DOWN]:
             camera.rotate(pitch_delta=-look_speed)
 
-        render_scene(screen, camera, objects, lights, render_size, config["ambient"])
+        renderer.render(camera)
+        screen.blit(pygame.transform.scale(renderer.surface, screen.get_size()), (0, 0))
         pygame.display.flip()
 
         for event in pygame.event.get():
