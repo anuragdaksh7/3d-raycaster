@@ -1,80 +1,102 @@
-import random
-import numpy as np
 import math
+import numpy as np
+
+
+EPSILON = 1e-4
+
+
+def normalize(vector):
+    vector = np.array(vector, dtype=float)
+    length = np.linalg.norm(vector)
+    if length == 0:
+        return vector
+    return vector / length
+
 
 class Sphere:
-    def __init__(self, x, y, z, radius, color, roughness = 0):
-        self.x = x
-        self.y = y
-        self.z = z
-        self.radius = radius
-        self.color = color
-        self.roughness = roughness
-        self.c = np.array([self.x, self.y, self.z])
+    def __init__(self, x, y, z, radius, color, roughness=0.0, reflectivity=0.15, specular=64):
+        self.x = float(x)
+        self.y = float(y)
+        self.z = float(z)
+        self.radius = float(radius)
+        self.color = np.array(color, dtype=float)
+        self.roughness = float(roughness)
+        self.reflectivity = float(reflectivity)
+        self.specular = float(specular)
+        self.c = np.array([self.x, self.y, self.z], dtype=float)
 
     def pointOfIntersection(self, ray):
-        # a ray is a 3d vector which will collide with the sphere and we will return the reflected ray
-        # ray reper = np.array([[ x, y, z],[l,m,n]])
-        m = ray.p - self.c
-        b = np.dot(m, ray.d)
-        c = np.dot(m, m) - self.radius * self.radius
+        oc = ray.p - self.c
+        b = np.dot(oc, ray.d)
+        c = np.dot(oc, oc) - self.radius * self.radius
 
-        if c> 0 and b> 0:
-            return 0
+        if c > 0 and b > 0:
+            return None
 
-        discr = b*b - c
-        if discr < 0:
-            return 0
+        discriminant = b * b - c
+        if discriminant < 0:
+            return None
 
-        t = -b - math.sqrt(discr)
-        t = max(t, 0)
-        return (1, ray.p + t*ray.d)
-    
-    def normalize(self, c1, c2):
-        c1 = np.array(c1)
-        c2 = np.array(c2)
-        d = c1-c2
-        d = d / np.linalg.norm(d)
-        return d
+        t = -b - math.sqrt(discriminant)
+        if t < EPSILON:
+            t = -b + math.sqrt(discriminant)
+        if t < EPSILON:
+            return None
+        return t, ray.p + t * ray.d
 
-    def getLightIntensity(self, point, light, surface_normal):
-        # print(point,light.c, light.color, light.getColor())
-        light.color = np.array([1.0,1.0,1.0])
-        distance = np.linalg.norm(light.c - point)
-        intensity = light.color
-        # print(light.color)
-        diffuse_coefficient = np.dot(surface_normal, self.normalize(point , light.c))
-        
-        # print(intensity)
-        # print(diffuse_coefficient)
-        intensity *= max(0,diffuse_coefficient)
-        # print(intensity)
-        return intensity
+    def intersect(self, ray):
+        hit = self.pointOfIntersection(ray)
+        if hit is None:
+            return None
+        return hit[0]
 
-    def reflectedRay(self, ray, light):
-        # print(light.color)
-        result = self.pointOfIntersection(ray)
-        if result == 0:
-            return
-        # print("fdf")
-        _, p = result
-        normal = (p - self.c)
-        normal = normal / np.linalg.norm(normal)
-        reflected = ray.d - 2 * np.dot(ray.d, normal) * normal
-        x = random.randint(-int(self.roughness*180), int(self.roughness*180))
-        y = random.randint(-int(self.roughness*180), int(self.roughness*180))
-        z = random.randint(-int(self.roughness*180), int(self.roughness*180))
-        randomDir = np.array([x,y,z])
-        randomDirUnitVector = randomDir/np.linalg.norm(randomDir)
-        if (np.dot(randomDirUnitVector,normal)< 0):
-            randomDirUnitVector*= -1
-        ray.colorMerger(self.color)
-        ray.colorMerger(self.getLightIntensity(p,light,reflected))
-        # print(ray.color)
-    
-if __name__ == '__main__':
+    def normal_at(self, point):
+        return normalize(point - self.c)
+
+    def color_at(self, point):
+        return self.color
+
+
+class Plane:
+    def __init__(
+        self,
+        point,
+        normal,
+        color=(0.85, 0.85, 0.88),
+        secondary_color=(0.18, 0.18, 0.2),
+        checker_size=1.0,
+        reflectivity=0.0,
+        specular=8,
+    ):
+        self.point = np.array(point, dtype=float)
+        self.normal = normalize(normal)
+        self.color = np.array(color, dtype=float)
+        self.secondary_color = np.array(secondary_color, dtype=float)
+        self.checker_size = float(checker_size)
+        self.reflectivity = float(reflectivity)
+        self.specular = float(specular)
+        self.c = self.point
+
+    def intersect(self, ray):
+        denom = np.dot(self.normal, ray.d)
+        if abs(denom) < EPSILON:
+            return None
+        t = np.dot(self.point - ray.p, self.normal) / denom
+        if t < EPSILON:
+            return None
+        return t
+
+    def normal_at(self, point):
+        return self.normal
+
+    def color_at(self, point):
+        pattern = int(math.floor(point[0] / self.checker_size) + math.floor(point[2] / self.checker_size))
+        return self.color if pattern % 2 == 0 else self.secondary_color
+
+
+if __name__ == "__main__":
     from Ray import Ray
-    s = Sphere(0, 0, 0, 1, (1,1,1))
-    r = Ray(10, 0, 0, -1, 0, 0)
+
+    s = Sphere(0, 0, 0, 1, (1, 1, 1))
+    r = Ray(10, 0, 0, (-1, 0, 0))
     print(s.pointOfIntersection(r))
-    
